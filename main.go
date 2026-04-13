@@ -1,13 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
 	// "time"
-
+	"github.com/SherClockHolmes/webpush-go"
 	"github.com/gorilla/websocket"
 	_ "modernc.org/sqlite" // Чистый Go драйвер SQLite
 )
@@ -34,6 +35,14 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+type PushSubscription struct {
+    Endpoint string `json:"endpoint"`
+    Keys     struct {
+        P256dh string `json:"p256dh"`
+        Auth   string `json:"auth"`
+    } `json:"keys"`
+}
+
 // Hub управляет всеми клиентами
 type Hub struct {
 	clients    map[*websocket.Conn]string // conn -> username
@@ -41,6 +50,7 @@ type Hub struct {
 	register   chan *websocket.Conn
 	unregister chan *websocket.Conn
 	mu         sync.Mutex // Мьютекс для безопасного доступа к мапе
+	subscriptions map[string]PushSubscription // username -> subscription
 }
 
 var hub = Hub{
@@ -190,8 +200,89 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 					Text:     msg.Text,
 				}
 			}
-		}
-	}
+						// Внутри case "chat":
+			// ... после сохранения в БД и отправки через hub.broadcast ...
+
+			// Получаем список всех онлайн-пользователей
+			hub.mu.Lock()
+			onlineUsers := make(map[string]bool)
+			for _, u := range hub.clients {
+				if u != "" {
+					onlineUsers[u] = true
+				}
+			}
+			hub.mu.Unlock()
+
+			// Отправляем уведомления тем, кто подписан, но не в сети
+			for username, _ := range hub.subscriptions {
+				if !onlineUsers[username] {
+					sendPushNotification(username, msg.Text)
+				}
+			}
+					}
+				}
+			}
+
+// Обработчик для сохранения подписки на уведомления
+func subscribeForPush(w http.ResponseWriter, r *http.Request) {
+    var sub PushSubscription
+    if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+    
+    // Определяем, какой пользователь подписался (например, из сессии)
+    // В нашем упрощенном примере будем передавать username в параметрах
+    username := r.URL.Query().Get("username")
+    if username == "" {
+        http.Error(w, "username is required", http.StatusBadRequest)
+        return
+    }
+
+    hub.mu.Lock()
+    hub.subscriptions[username] = sub
+    hub.mu.Unlock()
+
+    w.WriteHeader(http.StatusOK)
+}
+
+// Функция для отправки уведомления конкретному пользователю
+func sendPushNotification(username string, message string) error {
+    hub.mu.Lock()
+    sub, ok := hub.subscriptions[username]
+    hub.mu.Unlock()
+    if !ok {
+        return fmt.Errorf("no subscription found for user %s", username)
+    }
+
+    // Преобразуем нашу структуру в ту, что ожидает библиотека
+    s := &webpush.Subscription{
+        Endpoint: sub.Endpoint,
+        Keys: webpush.Keys{
+            P256dh: sub.Keys.P256dh,
+            Auth:   sub.Keys.Auth,
+        },
+    }
+
+    // Данные для уведомления
+    payload, _ := json.Marshal(map[string]string{
+        "title": username,
+        "body":  message,
+    })
+
+    // Отправляем уведомление
+    resp, err := webpush.SendNotification(payload, s, &webpush.Options{
+        Subscriber:      "mailto:liziwinc@gmail.com", // Замените на ваш email
+        VAPIDPublicKey:  "BMhoQwYNJ40YRNxYLaVXqbOTQmWYBkL9DqL_c38T7bDSTT5mlKGKtf6MQGxvPOPN-14N4G5ZjgR5s8EBa4KGIsM",          // Вставьте сюда публичный ключ
+        VAPIDPrivateKey: "m2afu3QTlzjZAYZMOgfvVPFh2KetmjymSzIscEps8JM",          // Вставьте сюда приватный ключ
+        TTL:             30,
+    })
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    return nil
 }
 
 func main() {

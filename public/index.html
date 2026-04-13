@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>Minimal Messenger</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <style>
         * {
             margin: 0;
@@ -365,6 +368,89 @@
             return localStorage.getItem('chat_username');
         }
 
+        // Внутри <script> в index.html
+
+        // Функция для регистрации Service Worker
+        async function registerServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                try {
+                    const registration = await navigator.serviceWorker.register('/sw.js');
+                    console.log('Service Worker зарегистрирован:', registration);
+                    
+                    // После регистрации можно запросить разрешение на показ уведомлений
+                    if (Notification.permission === 'default') {
+                        Notification.requestPermission();
+                    }
+                } catch (error) {
+                    console.error('Ошибка регистрации Service Worker:', error);
+                }
+            } else {
+                console.warn('Service Worker не поддерживается этим браузером.');
+            }
+        }
+
+        // Внутри <script> в index.html
+
+// Функция для подписки на push-уведомления
+async function subscribeToPush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        console.warn('Push-уведомления не поддерживаются');
+        return;
+    }
+
+    try {
+        const registration = await navigator.serviceWorker.ready;
+        
+        // Запрашиваем разрешение, если его еще нет
+        if (Notification.permission === 'default') {
+            await Notification.requestPermission();
+        }
+        
+        if (Notification.permission !== 'granted') {
+            console.warn('Разрешение на уведомления не получено');
+            return;
+        }
+
+        // Подписываемся на push-уведомления
+        const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array('ВАШ_ПУБЛИЧНЫЙ_КЛЮЧ') // Вставьте публичный VAPID-ключ
+        });
+
+        console.log('Пользователь подписан на уведомления:', subscription);
+        
+        // Отправляем подписку на сервер
+        await fetch(`/subscribe?username=${encodeURIComponent(myUsername)}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(subscription)
+        });
+    } catch (error) {
+        console.error('Ошибка подписки на push-уведомления:', error);
+    }
+}
+
+// Вспомогательная функция для преобразования VAPID-ключа
+function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding)
+        .replace(/\-/g, '+')
+        .replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
+
+// Вызовите эту функцию после успешной авторизации (внутри обработчика msg.type === "init")
+
+        // Вызываем регистрацию при загрузке страницы
+        window.addEventListener('load', registerServiceWorker);
+
         // ---------- Выход из чата ----------
         function logout() {
             clearAuth();
@@ -395,6 +481,8 @@
                     // Успешный вход
                     document.getElementById('auth-screen').style.display = 'none';
                     document.getElementById('chat-screen').style.display = 'flex';
+                    subscribeToPush();
+
                     
                     // Сохраняем факт входа
                     saveAuth(myUsername);
