@@ -390,8 +390,9 @@
         }
 
         // Внутри <script> в index.html
+// Вставь свой реальный публичный ключ!
+const VAPID_PUBLIC_KEY = 'BMhoQwYNJ40YRNxYLaVXqbOTQmWYBkL9DqL_c38T7bDSTT5mlKGKtf6MQGxvPOPN-14N4G5ZjgR5s8EBa4KGIsM';
 
-// Функция для подписки на push-уведомления
 async function subscribeToPush() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
         console.warn('Push-уведомления не поддерживаются');
@@ -401,36 +402,34 @@ async function subscribeToPush() {
     try {
         const registration = await navigator.serviceWorker.ready;
         
-        // Запрашиваем разрешение, если его еще нет
         if (Notification.permission === 'default') {
             await Notification.requestPermission();
         }
         
-        if (Notification.permission !== 'granted') {
-            console.warn('Разрешение на уведомления не получено');
-            return;
-        }
+        if (Notification.permission !== 'granted') return;
 
-        // Подписываемся на push-уведомления
         const subscription = await registration.pushManager.subscribe({
             userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array('ВАШ_ПУБЛИЧНЫЙ_КЛЮЧ') // Вставьте публичный VAPID-ключ
+            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
         });
 
-        console.log('Пользователь подписан на уведомления:', subscription);
-        
-        // Отправляем подписку на сервер
+        // Отправляем подписку на наш Go-сервер
         await fetch(`/subscribe?username=${encodeURIComponent(myUsername)}`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(subscription)
         });
     } catch (error) {
-        console.error('Ошибка подписки на push-уведомления:', error);
+        console.error('Ошибка подписки:', error);
     }
 }
+
+// Очищаем значок уведомлений с иконки приложения, когда пользователь открывает чат
+window.addEventListener('focus', () => {
+    if ('clearAppBadge' in navigator) {
+        navigator.clearAppBadge().catch(console.error);
+    }
+});
 
 // Вспомогательная функция для преобразования VAPID-ключа
 function urlBase64ToUint8Array(base64String) {

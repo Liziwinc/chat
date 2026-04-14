@@ -44,13 +44,12 @@ type PushSubscription struct {
 }
 
 // Hub управляет всеми клиентами
-type Hub struct {
-	clients    map[*websocket.Conn]string // conn -> username
-	broadcast  chan WSMessage
-	register   chan *websocket.Conn
-	unregister chan *websocket.Conn
-	mu         sync.Mutex // Мьютекс для безопасного доступа к мапе
-	subscriptions map[string]PushSubscription // username -> subscription
+var hub = Hub{
+	clients:       make(map[*websocket.Conn]string),
+	broadcast:     make(chan WSMessage),
+	register:      make(chan *websocket.Conn),
+	unregister:    make(chan *websocket.Conn),
+	subscriptions: make(map[string]PushSubscription),
 }
 
 var hub = Hub{
@@ -199,25 +198,24 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 					Username: sender,
 					Text:     msg.Text,
 				}
-			}
-						// Внутри case "chat":
-			// ... после сохранения в БД и отправки через hub.broadcast ...
 
-			// Получаем список всех онлайн-пользователей
-			hub.mu.Lock()
-			onlineUsers := make(map[string]bool)
-			for _, u := range hub.clients {
-				if u != "" {
-					onlineUsers[u] = true
+				// --- Логика отправки Push-уведомлений оффлайн пользователям ---
+				hub.mu.Lock()
+				onlineUsers := make(map[string]bool)
+				for _, u := range hub.clients {
+					if u != "" {
+						onlineUsers[u] = true
+					}
 				}
-			}
-			hub.mu.Unlock()
-
-			// Отправляем уведомления тем, кто подписан, но не в сети
-			for username, _ := range hub.subscriptions {
-				if !onlineUsers[username] {
-					sendPushNotification(username, msg.Text)
+				
+				// Ищем тех, кто подписан, но не онлайн (и не является отправителем)
+				for subUsername := range hub.subscriptions {
+					if !onlineUsers[subUsername] && subUsername != sender {
+						// Отправляем асинхронно, чтобы не блокировать вебсокет
+						go sendPushNotification(subUsername, sender, msg.Text)
+					}
 				}
+				hub.mu.Unlock()
 			}
 					}
 				}
@@ -246,16 +244,14 @@ func subscribeForPush(w http.ResponseWriter, r *http.Request) {
     w.WriteHeader(http.StatusOK)
 }
 
-// Функция для отправки уведомления конкретному пользователю
-func sendPushNotification(username string, message string) error {
+func sendPushNotification(targetUser string, senderUser string, message string) error {
     hub.mu.Lock()
-    sub, ok := hub.subscriptions[username]
+    sub, ok := hub.subscriptions[targetUser]
     hub.mu.Unlock()
     if !ok {
-        return fmt.Errorf("no subscription found for user %s", username)
+        return fmt.Errorf("no subscription found")
     }
 
-    // Преобразуем нашу структуру в ту, что ожидает библиотека
     s := &webpush.Subscription{
         Endpoint: sub.Endpoint,
         Keys: webpush.Keys{
@@ -264,33 +260,33 @@ func sendPushNotification(username string, message string) error {
         },
     }
 
-    // Данные для уведомления
+    // Формируем JSON для Service Worker'а
     payload, _ := json.Marshal(map[string]string{
-        "title": username,
+        "title": "Новое сообщение от " + senderUser,
         "body":  message,
     })
 
-    // Отправляем уведомление
+    // Твои ключи (в реальном проекте вынеси их в .env файл)
     resp, err := webpush.SendNotification(payload, s, &webpush.Options{
-        Subscriber:      "mailto:liziwinc@gmail.com", // Замените на ваш email
-        VAPIDPublicKey:  "BMhoQwYNJ40YRNxYLaVXqbOTQmWYBkL9DqL_c38T7bDSTT5mlKGKtf6MQGxvPOPN-14N4G5ZjgR5s8EBa4KGIsM",          // Вставьте сюда публичный ключ
-        VAPIDPrivateKey: "m2afu3QTlzjZAYZMOgfvVPFh2KetmjymSzIscEps8JM",          // Вставьте сюда приватный ключ
+        Subscriber:      "mailto:liziwinc@gmail.com", 
+        VAPIDPublicKey:  "BMhoQwYNJ40YRNxYLaVXqbOTQmWYBkL9DqL_c38T7bDSTT5mlKGKtf6MQGxvPOPN-14N4G5ZjgR5s8EBa4KGIsM",
+        VAPIDPrivateKey: "m2afu3QTlzjZAYZMOgfvVPFh2KetmjymSzIscEps8JM",
         TTL:             30,
     })
     if err != nil {
         return err
     }
     defer resp.Body.Close()
-
     return nil
 }
 
 func main() {
 	initDB()
-	go hub.run() // Запускаем хаб в фоне
+	go hub.run()
 
 	http.HandleFunc("/ws", handleConnections)
-	http.Handle("/", http.FileServer(http.Dir("./public"))) // Отдаем статику из папки public
+	http.HandleFunc("/subscribe", subscribeForPush) // ДОБАВЛЕНО: Регистрация эндпоинта
+	http.Handle("/", http.FileServer(http.Dir("./public")))
 
 	log.Println("Сервер запущен на :8080")
 	err := http.ListenAndServe(":8080", nil)

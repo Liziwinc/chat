@@ -1,39 +1,44 @@
 // public/sw.js
 
-// Слушаем push-события, которые приходят с вашего Go-сервера
+// Слушаем приход push-уведомления от сервера
 self.addEventListener('push', function(event) {
-    // Пытаемся прочитать данные, которые пришли с сервера
-    const data = event.data ? event.data.json() : { title: 'Новое сообщение', body: 'У вас новое сообщение в чате' };
-    
-    // Показываем уведомление
-    const promiseChain = self.registration.showNotification(data.title, {
-        body: data.body,
-        icon: '/icon-192x192.png', // Не забудьте добавить иконку в папку public
-        badge: '/badge-72x72.png',
-        vibrate: [200, 100, 200], // Вибросигнал для мобильных устройств
-        data: {
-            url: '/' // URL, который откроется при клике на уведомление
-        }
-    });
+    if (event.data) {
+        const data = event.data.json();
+        
+        const options = {
+            body: data.body,
+            icon: '/icon-192.png', // Убедись, что добавишь иконку приложения
+            badge: '/badge.png',   // Маленькая монохромная иконка для шторки уведомлений (опционально)
+            vibrate: [200, 100, 200],
+            data: { url: '/' }
+        };
 
-    event.waitUntil(promiseChain);
+        // Показываем само уведомление
+        event.waitUntil(
+            self.registration.showNotification(data.title, options).then(() => {
+                // Включаем значок (красную точку) на иконке приложения (App Badging API)
+                if ('setAppBadge' in navigator) {
+                    navigator.setAppBadge(); // Можно передать число, например navigator.setAppBadge(1)
+                }
+            })
+        );
+    }
 });
 
-// Обрабатываем клик по уведомлению
+// Что делать при клике на уведомление
 self.addEventListener('notificationclick', function(event) {
-    event.notification.close();
+    event.notification.close(); // Закрываем уведомление
 
-    // Открываем или фокусируем окно с чатом
     event.waitUntil(
         clients.matchAll({ type: 'window' }).then(windowClients => {
-            // Если окно с нашим приложением уже открыто, просто фокусируем его
+            // Проверяем, открыта ли уже вкладка с чатом
             for (var i = 0; i < windowClients.length; i++) {
                 var client = windowClients[i];
                 if (client.url === '/' && 'focus' in client) {
                     return client.focus();
                 }
             }
-            // Если нет — открываем новое
+            // Если нет, открываем новую
             if (clients.openWindow) {
                 return clients.openWindow('/');
             }
